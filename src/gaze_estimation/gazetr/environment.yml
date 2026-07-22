@@ -11,4 +11,11 @@ dependencies:
       - torchvision
       - opencv-python
       - numpy
-      # TODO: GazeTR 관련 실제 의존성 추가
+      - scipy
+      - mediapipe
+      - easydict
+      - pyrealsense2
+
+# GazeTR 모델 코드(model.py 등)는 이 저장소에 포함하지 않음.
+# 별도로 clone해서 사용: git clone https://github.com/yihuacheng/GazeTR ~/GazeTR
+# gaze_realtime.py는 ~/GazeTR 을 sys.path에 추가해서 import한다.

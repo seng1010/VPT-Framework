@@ -18,6 +18,17 @@
 
 ---
 
+## 2026-07-22 gaze 추정과 raycasting 노드 분리
+
+**배경:** 초기 프로토타입(head_gaze_publisher.py)은 카메라 입력 → GazeTR/MediaPipe gaze 추정 → RTAB-Map 포인트클라우드에 ray casting까지 한 노드 안에서 처리했음.
+**선택지:**
+1. 하나의 노드로 유지 (구현은 간단하지만 관심사가 섞임)
+2. gaze 추정 노드(vpt_gaze_bridge)와 raycasting 노드(vpt_raycasting)로 분리, ROS2 토픽(`/gaze_origin`, `/gaze_direction`)으로 연결
+**결정:** 2번, 노드 분리
+**이유:** gaze 추정은 카메라 프레임마다 고빈도로 도는 반면, raycasting은 SLAM 맵(`/cloud_map`) 갱신 주기에 좌우됨. 의존성(GazeTR/MediaPipe vs 포인트클라우드/KDTree)과 갱신 주기가 다른 두 관심사를 한 노드에 두면 각각 독립적으로 테스트/교체하기 어려움. 예: 맵 소스를 바꾸거나 raycasting 알고리즘만 교체할 때 gaze 추정 쪽을 건드릴 필요가 없어야 함.
+
+---
+
 ## 2026-XX-XX GazeTR / ROS2 프로세스 분리
 
 **배경:** GazeTR은 Python 3.13(conda) 환경에서 동작, ROS2는 시스템 Python 3.12 사용. 하나의 프로세스에서 같이 돌릴 수 없음.

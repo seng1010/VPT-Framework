@@ -12,19 +12,23 @@ vpt-research/
 ├── src/
 │   ├── ros2_ws/             # ROS2 워크스페이스
 │   │   └── src/
-│   │       ├── vpt_cameras/       # 듀얼 D455 카메라 노드
-│   │       ├── vpt_gaze_bridge/   # GazeTR(conda) <-> ROS2 브릿지
-│   │       └── vpt_raycasting/    # G_t (ground-truth gaze point) 계산 노드
+│   │       ├── vpt_cameras/       # 듀얼 D455 카메라 노드 (TODO: 아직 구현 안 됨)
+│   │       ├── vpt_gaze_bridge/   # GazeTR(conda) <-> ROS2 브릿지, /gaze_origin, /gaze_direction 퍼블리시
+│   │       └── vpt_raycasting/    # /cloud_map + gaze origin/direction 구독 -> G_t(ground-truth gaze point) 계산
 │   ├── gaze_estimation/
-│   │   ├── gazetr/                # GazeTR 관련 스크립트 (conda, Python 3.13)
-│   │   └── mediapipe_pipeline/    # head pose / facial landmark
+│   │   ├── gazetr/                # GazeTR 관련 스크립트 (conda, Python 3.13). GazeTR 본체는 별도 clone 필요
+│   │   └── mediapipe_pipeline/    # head pose / facial landmark 프로토타입
 │   └── slam/
 │       └── rtabmap_configs/
 ├── scripts/                # 셋업 및 실행 스크립트
 ├── configs/
-│   └── camera_calibration/
+│   └── camera_calibration/ # RealSense 캘리브레이션/프리셋
 └── data/                   # git 추적 안 함, 로컬 경로만 안내
 ```
+
+`vpt_gaze_bridge`와 `vpt_raycasting`은 별개 노드로 분리되어 있다 (근거: `docs/decisions.md`).
+`vpt_gaze_bridge`가 `/gaze_origin`, `/gaze_direction`을 퍼블리시하면 `vpt_raycasting`이 `/cloud_map`과
+동기화해서 `/gaze_point`(G_t)를 계산한다.
 
 ## 환경 셋업
 
