@@ -3,8 +3,6 @@
 Multi-view 3D Visual Perspective-Taking (VPT) framework for HRI.
 듀얼 Intel RealSense D455, RTAB-Map, MediaPipe, GazeTR, eye-tracking glasses(ground-truth) 기반.
 
-실험 진행 로그는 Notion에서 관리합니다. 이 레포는 **코드, 설정, 의사결정 근거**만 다룹니다.
-
 ## 구조
 
 ```
@@ -45,8 +43,8 @@ conda env create -f src/gaze_estimation/gazetr/environment.yml
 conda activate gazetr
 ```
 
-> **주의:** GazeTR(conda)과 ROS2(시스템 Python)는 별도 프로세스로 실행됩니다.
-> ROS2 명령어 실행 전 반드시 `conda deactivate` 하세요. 자세한 이유는 `docs/decisions.md` 참고.
+> **주의:** GazeTR(conda)과 ROS2(시스템 Python)는 별도 프로세스로 실행.
+> ROS2 명령어 실행 전 반드시 `conda deactivate` . 자세한 이유는 `docs/decisions.md` 참고.
 
 ## 실행 순서
 
@@ -60,4 +58,4 @@ conda activate gazetr
 
 ## 데이터
 
-`data/` 폴더는 git에서 제외됩니다. 카메라 원본 녹화, GazeTR pretrained 가중치 등은 로컬에 별도 보관하세요.
+`data/` 폴더는 git에서 제외됩니다. 카메라 원본 녹화, GazeTR pretrained 가중치 등은 로컬에 별도 보관.
