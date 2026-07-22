@@ -19,11 +19,14 @@ import pyrealsense2 as rs
 
 from model import Model
 
-# GazeTR 모델 로드
+# GazeTR 모델 로드 (pretrained checkpoint 필수 - 없으면 랜덤 초기화 가중치로 추론하게 됨)
 print("GazeTR 모델 로딩 중...")
 gazetr = Model()
+checkpoint_path = os.path.expanduser('~/Downloads/GazeTR-H-ETH.pt')
+state_dict = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+gazetr.load_state_dict(state_dict)
 gazetr.eval()
-print("GazeTR 모델 로드 완료!")
+print(f"GazeTR 모델 로드 완료! (checkpoint: {checkpoint_path})")
 
 # MediaPipe 얼굴 감지
 MODEL_PATH = os.path.expanduser("~/face_landmarker.task")

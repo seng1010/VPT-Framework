@@ -57,11 +57,14 @@ class GazeBridgeNode(Node):
         self.intrinsics = None
         self.real_camera_info = None
 
-        # GazeTR 모델 로드
+        # GazeTR 모델 로드 (pretrained checkpoint 필수 - 없으면 랜덤 초기화 가중치로 추론하게 됨)
         self.get_logger().info("GazeTR 모델 로딩 중...")
         self.gazetr = Model()
+        checkpoint_path = os.path.expanduser('~/Downloads/GazeTR-H-ETH.pt')
+        state_dict = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+        self.gazetr.load_state_dict(state_dict)
         self.gazetr.eval()
-        self.get_logger().info("GazeTR 모델 로드 완료!")
+        self.get_logger().info(f"GazeTR 모델 로드 완료! (checkpoint: {checkpoint_path})")
 
         # 스무딩 버퍼
         self.gaze_buf = deque(maxlen=SMOOTH_N)
