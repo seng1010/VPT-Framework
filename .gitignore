@@ -1,0 +1,26 @@
+# Data (raw camera recordings, datasets)
+data/*
+!data/.gitkeep
+
+# Model weights
+*.pth
+*.onnx
+*.pt
+**/pretrained/
+
+# Conda / Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# ROS2 build artifacts
+src/ros2_ws/build/
+src/ros2_ws/install/
+src/ros2_ws/log/
+
+# OS / editor
+.DS_Store
+.vscode/
+*.swp

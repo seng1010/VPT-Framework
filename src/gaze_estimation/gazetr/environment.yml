@@ -1,0 +1,14 @@
+name: gazetr
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.13
+  - pip
+  - pip:
+      - torch
+      - torchvision
+      - opencv-python
+      - numpy
+      # TODO: GazeTR 관련 실제 의존성 추가
