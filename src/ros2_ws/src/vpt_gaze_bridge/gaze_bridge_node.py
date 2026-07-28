@@ -3,7 +3,7 @@ Gaze Bridge Node
 - 카메라 이미지(RGB-D) 구독, MediaPipe로 얼굴/머리 위치 검출
 - GazeTR(fallback: head pose 행렬)로 gaze vector 추정
 - 머리 위치 + gaze 방향을 map 좌표계로 변환해 퍼블리시
-- 머리 위치에 가상 카메라 TF/CameraInfo/Image 퍼블리시
+- 머리 위치에 가상 카메라 TF/CameraInfo 퍼블리시 (image_raw는 vpt_virtual_camera 노드가 담당)
 
 Ray casting(포인트클라우드와의 교차점 G_t 계산)은 이 노드가 하지 않는다.
 /gaze_origin, /gaze_direction 을 퍼블리시하고, vpt_raycasting 노드가 구독해서
@@ -80,11 +80,9 @@ class GazeBridgeNode(Node):
         self.gaze_origin_pub = self.create_publisher(PointStamped, '/gaze_origin', 10)
         self.gaze_direction_pub = self.create_publisher(Vector3Stamped, '/gaze_direction', 10)
 
-        # 가상 카메라 퍼블리셔
+        # 가상 카메라 퍼블리셔 (TF/CameraInfo만; image_raw는 vpt_virtual_camera 노드가 렌더링해서 퍼블리시)
         self.virtual_cam_info_pub = self.create_publisher(
             CameraInfo, '/virtual_camera/camera_info', 10)
-        self.virtual_cam_image_pub = self.create_publisher(
-            Image, '/virtual_camera/image_raw', 10)
 
         # MediaPipe
         base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
@@ -107,7 +105,7 @@ class GazeBridgeNode(Node):
         self.sync.registerCallback(self.image_callback)
 
         self.get_logger().info("Gaze Bridge Node 시작!")
-        self.get_logger().info("가상 카메라 토픽: /virtual_camera/camera_info, /virtual_camera/image_raw")
+        self.get_logger().info("가상 카메라 토픽: /virtual_camera/camera_info (image_raw는 vpt_virtual_camera 노드가 퍼블리시)")
         self.get_logger().info("gaze 토픽: /gaze_origin, /gaze_direction (ray casting은 vpt_raycasting 노드가 담당)")
 
     def camera_info_callback(self, msg):
@@ -338,11 +336,8 @@ class GazeBridgeNode(Node):
         cv2.imshow("Gaze Bridge", frame)
         cv2.waitKey(1)
 
-        # 가상 카메라 이미지 퍼블리시 (실제 카메라 이미지 그대로)
-        virtual_img_msg = self.bridge.cv2_to_imgmsg(frame, 'bgr8')
-        virtual_img_msg.header.stamp = self.get_clock().now().to_msg()
-        virtual_img_msg.header.frame_id = 'head_position'
-        self.virtual_cam_image_pub.publish(virtual_img_msg)
+        # 가상 카메라 이미지는 이 노드가 퍼블리시하지 않는다.
+        # /cloud_map 기반 렌더링은 vpt_virtual_camera 노드가 담당 (head_position TF는 위에서 이미 퍼블리시함)
 
     def destroy_node(self):
         cv2.destroyAllWindows()
