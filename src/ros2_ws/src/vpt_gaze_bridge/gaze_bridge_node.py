@@ -94,12 +94,13 @@ class GazeBridgeNode(Node):
         )
         self.detector = vision.FaceLandmarker.create_from_options(options)
 
-        # 구독
-        self.create_subscription(CameraInfo, '/camera/camera/color/camera_info',
+        # 구독 (Camera B = 얼굴/gaze 전용, 2026-08-04부터 Kinect. docs/dual_camera_design.md 참고.
+        # Camera A(SLAM, D455)는 별도 네임스페이스 /camera/camera/... 로 계속 돌아감)
+        self.create_subscription(CameraInfo, '/kinect/rgb/camera_info',
                                   self.camera_info_callback, 10)
 
-        color_sub = message_filters.Subscriber(self, Image, '/camera/camera/color/image_raw')
-        depth_sub = message_filters.Subscriber(self, Image, '/camera/camera/aligned_depth_to_color/image_raw')
+        color_sub = message_filters.Subscriber(self, Image, '/kinect/rgb/image_raw')
+        depth_sub = message_filters.Subscriber(self, Image, '/kinect/depth/image_raw')
         self.sync = message_filters.ApproximateTimeSynchronizer(
             [color_sub, depth_sub], queue_size=10, slop=0.1)
         self.sync.registerCallback(self.image_callback)
@@ -270,7 +271,7 @@ class GazeBridgeNode(Node):
 
             if 0.1 < d < 5.0:
                 head_cam = self.pixel_to_3d(u, v, d)
-                head_map = self.transform_to_map(head_cam, 'camera_color_optical_frame')
+                head_map = self.transform_to_map(head_cam, 'kinect_rgb_optical_frame')
 
                 if head_map is not None:
                     self.head_pub.publish(head_map)
@@ -292,12 +293,12 @@ class GazeBridgeNode(Node):
                     # Gaze vector → map 좌표계 변환
                     try:
                         transform = self.tf_buffer.lookup_transform(
-                            MAP_FRAME, 'camera_color_optical_frame',
+                            MAP_FRAME, 'kinect_rgb_optical_frame',
                             rclpy.time.Time(),
                             timeout=rclpy.duration.Duration(seconds=0.1)
                         )
                         v3 = Vector3Stamped()
-                        v3.header.frame_id = 'camera_color_optical_frame'
+                        v3.header.frame_id = 'kinect_rgb_optical_frame'
                         v3.vector.x = float(gaze_vec[0])
                         v3.vector.y = float(gaze_vec[1])
                         v3.vector.z = float(gaze_vec[2])

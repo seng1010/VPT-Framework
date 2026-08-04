@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>vpt_cameras</name>
+  <version>0.1.0</version>
+  <description>
+    Camera B (얼굴/gaze 전용) 드라이버. Kinect v1(Xbox 360)을 libfreenect로 감싸서
+    RGB+registered depth를 발행 — docs/dual_camera_design.md 참고. Camera A(SLAM)는
+    기존 realsense2_camera로 별도 네임스페이스에서 띄운다(이 패키지에 안 들어있음).
+  </description>
+  <maintainer email="seng@example.com">seng</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
