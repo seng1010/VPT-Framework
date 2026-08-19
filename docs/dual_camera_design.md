@@ -100,8 +100,52 @@ Kinect는 사람)을 보고 있다. **head_position 계산 자체는 되지만 �
 3. static TF 실측 방법 — 자로 직접 재는 방법도 있고, 체커보드로 두 카메라가 동시에 보이는 위치에
    놓고 카메라-카메라 캘리브레이션하는 방법도 있음 (Kinect가 SLAM 카메라 쪽을 향하게 임시로
    틀어서 서로를 비추게 하거나, 공통 체커보드를 각자 다른 시점에서 촬영)
-4. Kinect USB 대역폭 — D455 + Kinect 동시 연결 시 문제없는지 아직 같이 안 띄워봄 (오늘은 Kinect만
-   단독 테스트)
+   → **교수님 제안 (2026-08-06): 실측 대신 Kinect도 자체 localization.** static TF(고정값,
+   지금은 identity placeholder)로 D455 pose에서 Kinect 위치를 유추하는 대신, **RTAB-Map을
+   D455용/Kinect용 두 개 띄워서** 둘 다 같은 저장된 맵(`~/.ros/rtabmap.db`)에 대해 각자
+   localization 하게 만들면 Kinect의 `map` 기준 pose가 실측 없이 자동으로 나옴. 이게 바로 위
+   "옵션 (b)"였던 것 — 이번엔 실제로 시도해볼 예정.
+   - 구현 방법(스케치, 아직 안 함): D455용 rtabmap과는 별도 네임스페이스로 두 번째
+     `rtabmap_launch rtabmap.launch.py` 인스턴스를 Kinect의 `/kinect/rgb/...`,
+     `/kinect/depth/...` 토픽에 대고 localization 모드로 띄움 (Kinect는 RGB+Depth만 있고
+     IMU는 없어도 됨 — 지금 D455 쪽도 IMU 토픽 없이 순수 RGB-D localization으로 돌리고
+     있어서 같은 방식 그대로 적용 가능). 같은 `~/.ros/rtabmap.db`를 두 인스턴스가 동시에
+     읽어야 하는데 localization 모드는 read-only에 가까우니 될 가능성 높음 — 실제 동시
+     오픈이 되는지는 테스트 필요.
+   - **알려진 위험**: Kinect의 원래 역할이 사람 얼굴 클로즈업이라, 이게 오늘까지 계속
+     겪었던 "클로즈업하면 SLAM 트래킹 깨짐" 문제를 Kinect 자체에도 그대로 일으킬 수 있음.
+     Kinect가 얼굴만이 아니라 배경(방)도 어느 정도 같이 보이는 각도/거리로 배치되면
+     완화될 가능성 있음 — 물리적 배치(질문 2번)와도 연결됨.
+4. ~~Kinect USB 대역폭~~ → 해결 (2026-08-05 확인). D455+Kinect+RTAB-Map+gaze_bridge_node+
+   raycasting_node+virtual_camera_node 전부 동시에 띄워서 여러 차례 테스트 — USB 대역폭 문제
+   없음. 병목은 대역폭이 아니라 **CPU/메모리**였음(아래 참고).
+
+## 2026-08-05 — 전체 파이프라인 실측 + 성능 이슈
+
+D455+Kinect+RTAB-Map(localization, 253노드/44만포인트 맵)+gaze_bridge_node+raycasting_node+
+virtual_camera_node를 전부 동시에 띄워서 `/head_position`, `/gaze_origin`, `/gaze_direction`,
+`/virtual_camera/image_raw`까지 전부 실제로 확인함 (identity static TF라 위치 정확도는 아직 아님,
+배선 자체는 끝까지 연결됨).
+
+### `virtual_camera_node` 성능 문제 + 수정
+- 매 프레임(10Hz) 44만 포인트를 지웠다 다시 추가 + 렌더링 → CPU 300~500%+, 시스템 load average
+  15까지 치솟아서 RViz가 응답 없음 상태로 멈추거나(재현: `ps` STAT이 결국 `Zl`(zombie)로 바뀌며
+  크래시) 시스템 전체가 버벅임. `free -h` 확인 결과 메모리도 거의 바닥(804Mi free, swap 사용 중),
+  컨텍스트 스위치 초당 22만+ — 리소스 고갈이 원인.
+- **수정 3가지**: (1) `map_points`가 실제로 갱신됐을 때만 geometry 재생성(`map_dirty` 플래그),
+  (2) 렌더링 주기 10Hz→2Hz, (3) `voxel_down_sample(0.03)`으로 44만 포인트를 다운샘플. CPU
+  521%→~50~120%까지 감소.
+- **RViz는 이 전체 파이프라인과 동시에 못 씀** (같은 44만 포인트 맵을 RViz도 client-side로 또
+  받아서 렌더링하려니 감당이 안 됨) — 대신 `rqt_image_view`(가벼움, CPU 한 자릿수%)로
+  `/virtual_camera/image_raw` 확인하는 걸로 대체.
+- RTAB-Map의 `/rtabmap/cloud_map`은 localization 모드에서 **한 번만 발행**됨(맵이 안 바뀌므로) —
+  `virtual_camera_node`/`raycasting_node`가 그 순간을 놓치면 이후로 데이터가 안 옴. 필요하면
+  `ros2 service call /rtabmap/rtabmap/publish_map rtabmap_msgs/srv/PublishMap "{}"`로 강제 재발행.
+
+### 색상 추가
+`virtual_camera_node`가 흑백 점만 찍어서 노이즈처럼 보이던 문제 — `/rtabmap/cloud_map`에 이미
+`rgb` 필드(PCL 관례, packed float32 = 0x00RRGGBB)가 있어서 디코딩해서 `pcd.colors`에 반영,
+점 크기도 2px→6px로 키움. 색 입히니 방 구조가 눈에 띄게 잘 보임.
 
 ## 참고
 

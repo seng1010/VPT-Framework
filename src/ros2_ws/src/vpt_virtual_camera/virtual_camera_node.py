@@ -52,7 +52,8 @@ FX = 386.3029479980469          # D455 실측 color camera_info 기준
 FY = 385.8308410644531
 CX = 326.624267578125
 CY = 249.3714599609375
-POINT_SIZE_PX = 2              # 렌더링 시 포인트 하나가 차지하는 픽셀 반경
+POINT_SIZE_PX = 6              # 렌더링 시 포인트 하나가 차지하는 픽셀 반경 (2026-08-05: 2->6, 다운샘플 후 성겨서 키움)
+VOXEL_SIZE_M = 0.03            # 다운샘플 voxel 크기 — 렌더링용이라 좀 성겨도 됨 (2026-08-05)
 
 
 class VirtualCameraNode(Node):
@@ -60,7 +61,8 @@ class VirtualCameraNode(Node):
         super().__init__("virtual_camera_node")
 
         self.bridge = CvBridge()
-        self.map_points = None  # (N,3) float32, map frame 기준
+        self.map_points = None  # (N,3) float64, map frame 기준
+        self.map_colors = None  # (N,3) float64, 0~1 RGB (없으면 흰색으로 렌더링)
 
         qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
@@ -85,9 +87,11 @@ class VirtualCameraNode(Node):
         self.material.shader = "defaultUnlit"
         self.material.point_size = POINT_SIZE_PX
         self.geometry_added = False
+        self.map_dirty = False
 
-        # ~10Hz로 렌더링 (필요시 조정)
-        self.create_timer(0.1, self.render_and_publish)
+        # 2026-08-05: 10Hz였는데 44만개 포인트 렌더링+readback이 매번 무거워서(CPU 300~500%+,
+        # 시스템 전체가 버벅일 정도) 2Hz로 낮춤. 시선 방향 대략 확인용이라 이 정도로 충분.
+        self.create_timer(0.5, self.render_and_publish)
 
         self.get_logger().info("virtual_camera_node started")
 
@@ -96,6 +100,21 @@ class VirtualCameraNode(Node):
         if pts.shape[0] == 0:
             return
         self.map_points = pts.astype(np.float64)
+
+        # 2026-08-05: 색상 없이 흰 점만 찍혀서 TV노이즈처럼 보이는 문제 — rtabmap의 cloud_map에
+        # 이미 rgb 필드가 있어서(PCL 관례상 packed float32, 0x00RRGGBB) 그대로 디코딩해서 씀
+        field_names = [f.name for f in msg.fields]
+        if "rgb" in field_names:
+            rgb_raw = point_cloud2.read_points_numpy(msg, field_names=("rgb",), skip_nans=True)
+            rgb_uint = rgb_raw.reshape(-1).copy().view(np.uint32)
+            r = ((rgb_uint >> 16) & 0xFF).astype(np.float64) / 255.0
+            g = ((rgb_uint >> 8) & 0xFF).astype(np.float64) / 255.0
+            b = (rgb_uint & 0xFF).astype(np.float64) / 255.0
+            self.map_colors = np.stack([r, g, b], axis=-1)
+        else:
+            self.map_colors = None
+
+        self.map_dirty = True  # render_and_publish이 다음 프레임에 geometry 재생성하도록
 
     def get_head_pose(self):
         """head_position TF -> (4x4 map->head extrinsic)"""
@@ -122,17 +141,20 @@ class VirtualCameraNode(Node):
         if T_map_head is None:
             return
 
-        if not self.geometry_added:
-            pcd = o3d.geometry.PointCloud()
-            pcd.points = o3d.utility.Vector3dVector(self.map_points)
-            self.renderer.scene.add_geometry("map", pcd, self.material)
-            self.geometry_added = True
-        else:
-            # 맵이 갱신될 수 있으면 매번 지우고 다시 추가 (SLAM이 map을 계속 업데이트하는 경우)
+        # map_points가 실제로 갱신됐을 때만 geometry 재생성 (2026-08-05: 매 프레임 44만개 포인트를
+        # 지웠다 다시 추가하던 걸 고침 — CPU 300%+ 먹으면서 시스템 전체가 버벅였음. localization
+        # 모드처럼 맵이 안 바뀌면 최초 1회만 추가하고 그 뒤로는 pose만 바뀐 채 재렌더링만 함)
+        if self.map_dirty or not self.geometry_added:
             self.renderer.scene.clear_geometry()
             pcd = o3d.geometry.PointCloud()
             pcd.points = o3d.utility.Vector3dVector(self.map_points)
+            if self.map_colors is not None and len(self.map_colors) == len(self.map_points):
+                pcd.colors = o3d.utility.Vector3dVector(self.map_colors)
+            # voxel_down_sample은 pcd.colors가 세팅되어 있으면 색도 같이 평균내서 합쳐줌
+            pcd = pcd.voxel_down_sample(VOXEL_SIZE_M)  # 44만개 -> 훨씬 적게, 렌더링 부하 감소
             self.renderer.scene.add_geometry("map", pcd, self.material)
+            self.geometry_added = True
+            self.map_dirty = False
 
         intrinsic = o3d.camera.PinholeCameraIntrinsic(
             IMAGE_WIDTH, IMAGE_HEIGHT, FX, FY, CX, CY
