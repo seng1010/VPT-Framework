@@ -104,14 +104,37 @@ Kinect는 사람)을 보고 있다. **head_position 계산 자체는 되지만 �
    지금은 identity placeholder)로 D455 pose에서 Kinect 위치를 유추하는 대신, **RTAB-Map을
    D455용/Kinect용 두 개 띄워서** 둘 다 같은 저장된 맵(`~/.ros/rtabmap.db`)에 대해 각자
    localization 하게 만들면 Kinect의 `map` 기준 pose가 실측 없이 자동으로 나옴. 이게 바로 위
-   "옵션 (b)"였던 것 — 이번엔 실제로 시도해볼 예정.
-   - 구현 방법(스케치, 아직 안 함): D455용 rtabmap과는 별도 네임스페이스로 두 번째
-     `rtabmap_launch rtabmap.launch.py` 인스턴스를 Kinect의 `/kinect/rgb/...`,
-     `/kinect/depth/...` 토픽에 대고 localization 모드로 띄움 (Kinect는 RGB+Depth만 있고
-     IMU는 없어도 됨 — 지금 D455 쪽도 IMU 토픽 없이 순수 RGB-D localization으로 돌리고
-     있어서 같은 방식 그대로 적용 가능). 같은 `~/.ros/rtabmap.db`를 두 인스턴스가 동시에
-     읽어야 하는데 localization 모드는 read-only에 가까우니 될 가능성 높음 — 실제 동시
-     오픈이 되는지는 테스트 필요.
+   "옵션 (b)"였던 것.
+
+   **스크립트 준비 완료 (2026-08-19), 실카메라 미검증**: `scripts/run_kinect_localization.sh`.
+   새 launch 파일을 따로 안 만들고, ROS2에 이미 설치된 범용 `rtabmap_launch/rtabmap.launch.py`
+   에 인자만 넘겨서 씀 (`--show-args`로 아래 인자들이 전부 실제로 지원됨을 확인함):
+   ```bash
+   ros2 launch rtabmap_launch rtabmap.launch.py \
+       namespace:=kinect_rtabmap \
+       frame_id:=kinect_rgb_optical_frame \
+       vo_frame_id:=kinect_odom  odom_topic:=kinect_odom \
+       map_frame_id:=map \
+       rgb_topic:=/kinect/rgb/image_raw \
+       depth_topic:=/kinect/depth/image_raw \
+       camera_info_topic:=/kinect/rgb/camera_info \
+       approx_sync:=true  localization:=true \
+       database_path:=<Kinect 전용 db 사본>
+   ```
+   - `vo_frame_id`/`odom_topic`을 `kinect_odom`으로 반드시 따로 지정해야 한다 — 기본값이
+     둘 다 `odom`이라 D455쪽 visual odometry와 TF 프레임 이름이 겹쳐버림(`map_frame_id`만
+     의도적으로 공유, 나머지 프레임은 각자 이름이 달라야 TF 트리가 안 꼬임).
+   - **동시 오픈 위험은 회피**: 같은 `rtabmap.db`를 두 프로세스가 동시에 여는 상황 자체를
+     테스트하는 대신, 스크립트가 매 실행마다 Kinect 전용 사본(`rtabmap_kinect_localization.db`)
+     을 새로 떠서 그걸 읽게 함 — 파일 잠금 충돌 가능성을 원천 차단.
+   - 이 스크립트가 잘 동작하면 기존 identity `static_transform_publisher`(camera_link →
+     kinect_rgb_optical_frame)는 끄고 이걸로 대체한다. 둘 다 켜두면 static TF가 우선권을 가져가
+     Kinect의 실제 localization 결과가 무시될 수 있다.
+   - **미검증**: 지금 데스크톱에 D455/Kinect가 물리적으로 연결 안 되어 있어서 `ros2 launch`
+     자체를 아직 실행해보지 못함(인자 유효성만 `--show-args`로 확인). 카메라 연결 후 처음
+     테스트할 때 확인할 것: (a) Kinect localization이 실제로 붙는지(`ros2 topic echo
+     /kinect_rtabmap/localization_pose` 등), (b) `map → kinect_odom → kinect_rgb_optical_frame`
+     TF 체인이 끊김 없이 나오는지.
    - **알려진 위험**: Kinect의 원래 역할이 사람 얼굴 클로즈업이라, 이게 오늘까지 계속
      겪었던 "클로즈업하면 SLAM 트래킹 깨짐" 문제를 Kinect 자체에도 그대로 일으킬 수 있음.
      Kinect가 얼굴만이 아니라 배경(방)도 어느 정도 같이 보이는 각도/거리로 배치되면
