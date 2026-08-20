@@ -170,7 +170,74 @@ virtual_camera_node를 전부 동시에 띄워서 `/head_position`, `/gaze_origi
 `rgb` 필드(PCL 관례, packed float32 = 0x00RRGGBB)가 있어서 디코딩해서 `pcd.colors`에 반영,
 점 크기도 2px→6px로 키움. 색 입히니 방 구조가 눈에 띄게 잘 보임.
 
+## 2026-08-19/20 — D455-Kinect extrinsic 실측 대체, 실카메라 검증 완료
+
+`scripts/run_kinect_localization.sh`(교수님 제안, "옵션 (b)")를 D455/Kinect 둘 다 물리
+연결된 상태로 실제로 돌려서 검증했다.
+
+- D455: `realsense2_camera` + `rtabmap_launch/rtabmap.launch.py`(localization:=true,
+  database_path=`~/.ros/rtabmap.db`)를 그대로 사용.
+- Kinect: `scripts/run_kinect_localization.sh` — 같은 db의 전용 사본에 대해 별도
+  네임스페이스(`kinect_rtabmap`, `vo_frame_id`/`odom_topic`을 `kinect_odom`으로 분리해
+  D455쪽과 TF 프레임 충돌 방지)로 localization.
+- 결과: `map -> odom -> camera_color_optical_frame`(D455)와
+  `map -> kinect_odom -> kinect_rgb_optical_frame`(Kinect)이 각각 독립적으로, 서로 다른
+  값으로(실측 없이) 나옴. **Kinect를 손으로 움직이는 동안 `tf2_echo map
+  kinect_rgb_optical_frame` 값이 프레임마다 실시간으로 따라 바뀌는 것까지 확인** —
+  저장된 초기값을 그대로 뱉는 게 아니라 매 프레임 다시 계산되고 있다는 확실한 증거.
+- 하드웨어 트러블슈팅 기록: D455는 반드시 진짜 USB3(20000M) 버스에 물려야 함 — USB2
+  포트에서는 `align_depth` 처리 중 `Failed to grow hash_map` 에러로 즉시 segfault
+  (이 머신은 xHCI 컨트롤러 하나가 USB2/USB3 버스를 동시에 노출하는 구조라 포트 겉모습만
+  보고는 구분 안 됨, `lsusb -t`로 실제 연결된 bus의 속도를 확인해야 함). Kinect는 별도
+  전원 어댑터가 있어야 카메라/오디오 서브장치까지 다 잡힘(모터만 잡히는 건 전형적인
+  전력 부족 신호, `journalctl -k`에서 `device not accepting address, error -71` 같은
+  protocol error로 나타남) — 그리고 이번엔 데이터 케이블 쪽 PC 포트를 바꾸고서야 해결됨
+  (전원 어댑터 문제가 아니라 데이터 포트 자체가 헐거웠던 케이스도 있었음, 원인이 매번
+  같다고 단정하지 말 것).
+
+## 2026-08-20 — #21 VPT 미팅: 카메라 역할 재정의 (SLAM/얼굴 분리 → 동시 검출 + fusion)
+
+교수님 피드백: D455/Kinect를 SLAM 전용/얼굴 전용으로 나누는 게 아니라, **두 카메라가 동시에
+같은 역할(얼굴/gaze 검출)을 하고 그 결과를 fusion**해야 한다 — "두 로봇이 같은 사람을 다른
+각도에서 보는" 것처럼. 이게 원래 연구제안서(M-VPT) 초록의 "multi-view가 가림/사각지대를
+완화한다"는 취지와 맞다 — 지금까지의 SLAM/얼굴 역할 분리는 "카메라 1대로 SLAM+얼굴 동시
+처리 시 트래킹 깨짐"(2026-07-28) 문제를 피하려던 임시방편이었을 뿐, 최종 목표는 아니었다.
+위 섹션의 D455 자체 localization 검증이 정확히 이 전환에 필요한 전제조건이었다(이제 D455도
+Kinect처럼 map 기준 pose를 자체적으로 얻으므로, "환경 전용" 역할에 묶여있을 이유가 없다).
+
+### 구현
+
+- `gaze_bridge_node.py`를 파라미터화(`camera_name`, `rgb_topic`, `depth_topic`,
+  `camera_info_topic`, `tf_frame`, `show_window`) — 카메라 하나에 고정하지 않고 같은 노드를
+  `-p camera_name:=kinect`/`-p camera_name:=d455`로 두 번 띄울 수 있음. 각 인스턴스는 자기
+  이름이 붙은 토픽(`/kinect/head_position` 등)에만 발행 — 정규 토픽은 건드리지 않는다.
+- `gaze_fusion_node.py` 신규 — 두 인스턴스의 `/{camera}/head_position`,
+  `/{camera}/gaze_direction`을 구독해서 융합(1초 이내에 갱신된 카메라만 포함, 하나만
+  살아있으면 그대로 통과, 둘 다 있으면 head_position 3D 평균 + gaze_direction 단위벡터
+  평균 후 재정규화) 후 **정규 토픽**(`/head_position`, `/gaze_origin`, `/gaze_direction`,
+  `/virtual_camera/camera_info`, TF 프레임 `head_position`)으로 재발행. `vpt_raycasting`,
+  `vpt_virtual_camera`는 이 노드가 존재한다는 것조차 몰라도 됨 — 인터페이스 그대로 유지.
+- `scripts/run_dual_gaze_bridge.sh` 신규 — 위 세 프로세스(kinect용/d455용 gaze_bridge +
+  fusion)를 한 번에 띄움. D455/Kinect 각각의 카메라 드라이버+RTAB-Map은 이 스크립트 밖에서
+  먼저 띄워져 있어야 함(전제 조건은 스크립트 상단 주석 참고).
+- 검증: `gaze_bridge_node.py`를 실제 GazeTR 체크포인트/MediaPipe 모델과 함께
+  camera_name=kinect(기본값, 기존 동작과 동일한지)/camera_name=d455(새 파라미터 오버라이드)
+  양쪽 다 실제로 생성해봐서 정상 동작 확인. `gaze_fusion_node.py`도 생성 확인. **다만 실제
+  두 카메라 앞에 사람을 두고 fusion된 gaze 값이 정확한지는 아직 실측 전** — 다음 세션에서
+  `scripts/run_dual_gaze_bridge.sh` 실행 + 두 카메라가 동시에 얼굴을 보는 상태에서 검증할 것.
+
+### 다음
+
+- [ ] 실카메라로 `scripts/run_dual_gaze_bridge.sh` 실행 — 두 카메라 다 얼굴을 보는 상태에서
+      fusion된 `/gaze_direction`이 안정적인지, 한쪽 카메라만 얼굴이 보일 때 자연스럽게
+      그 카메라로 전환되는지 확인.
+- [ ] fusion 방식 고도화 검토 — 지금은 단순 평균. 신뢰도(얼굴 크기, landmark 품질 등) 기반
+      가중치나 두 시선 방향이 서로 크게 어긋날 때(둘 중 하나가 오검출일 가능성) 처리 로직 추가.
+- [ ] `docs/12_eye_scene_extrinsic_calibration.md`(MoLBWA 쪽 R+t 캘리브레이션 설계)와는
+      별개 트랙 — 혼동 주의.
+- [ ] GazeTR 대신 PureGaze/L2CS-Net으로 교체하는 것도 `#21 VPT`에 남은 항목 (표 참고).
+
 ## 참고
 
 - 오늘 재현 로그: `Registration failed: "Not enough inliers 0/20"` 3회 (매핑 세션 2회, localization+gaze 세션 1회)
-- 관련 기존 기록: `#18 VPT` (2026-07-22), `docs/decisions.md`
+- 관련 기존 기록: `#18 VPT` (2026-07-22), `#21 VPT` (2026-08-20), `docs/decisions.md`

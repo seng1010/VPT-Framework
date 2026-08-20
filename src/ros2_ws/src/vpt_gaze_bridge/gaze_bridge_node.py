@@ -8,6 +8,19 @@ Gaze Bridge Node
 Ray casting(포인트클라우드와의 교차점 G_t 계산)은 이 노드가 하지 않는다.
 /gaze_origin, /gaze_direction 을 퍼블리시하고, vpt_raycasting 노드가 구독해서
 G_t를 계산한다. 이유는 docs/decisions.md 참고.
+
+카메라별 파라미터화 (2026-08-20, #21 VPT 미팅 반영):
+교수님 피드백 — D455/Kinect는 역할을 나누는(SLAM 전용/얼굴 전용) 게 아니라 **같은 역할을
+동시에** 수행해야 함(두 로봇이 같은 사람을 다른 각도에서 보는 것처럼). D455는 이미
+2026-08-06~08-20 세션에서 자체 RTAB-Map localization으로 map 기준 pose를 얻도록 검증됨
+(scripts/run_kinect_localization.sh와 대칭되는 D455용 실행이 이미 가능 — extrinsic 실측 불필요).
+
+그래서 이 노드를 카메라 하나에 고정하지 않고 ROS2 파라미터로 카메라를 바꿔가며 두 개
+인스턴스(kinect용/d455용)를 동시에 띄울 수 있게 파라미터화했다. 각 인스턴스는 자기 이름이
+붙은 토픽(`/{camera_name}/head_position` 등)에만 발행한다 — 기존 정규 토픽
+(`/head_position`, `/gaze_origin`, `/gaze_direction`, `/virtual_camera/camera_info`, TF
+프레임 `head_position`)은 이 노드가 아니라 새로 추가한 gaze_fusion_node.py가 두 인스턴스의
+출력을 합쳐서 발행한다 — vpt_raycasting/vpt_virtual_camera는 전혀 안 건드려도 됨.
 """
 
 import rclpy
@@ -51,7 +64,25 @@ MAP_FRAME = 'map'  # rtabmap map frame (try '/map' if markers don't appear)
 
 class GazeBridgeNode(Node):
     def __init__(self):
+        # 노드 이름은 고정('gaze_bridge_node') — 카메라별로 두 개 동시에 띄울 때는
+        # 실행 인자로 `--ros-args -r __node:=gaze_bridge_kinect -p camera_name:=kinect`처럼
+        # 이름을 리매핑한다 (scripts/run_dual_gaze_bridge.sh 참고).
         super().__init__('gaze_bridge_node')
+
+        self.declare_parameter('camera_name', 'kinect')
+        self.declare_parameter('rgb_topic', '/kinect/rgb/image_raw')
+        self.declare_parameter('depth_topic', '/kinect/depth/image_raw')
+        self.declare_parameter('camera_info_topic', '/kinect/rgb/camera_info')
+        self.declare_parameter('tf_frame', 'kinect_rgb_optical_frame')
+        self.declare_parameter('show_window', True)
+
+        self.camera_name = self.get_parameter('camera_name').value
+        self.rgb_topic = self.get_parameter('rgb_topic').value
+        self.depth_topic = self.get_parameter('depth_topic').value
+        self.camera_info_topic = self.get_parameter('camera_info_topic').value
+        self.tf_frame = self.get_parameter('tf_frame').value
+        self.show_window = self.get_parameter('show_window').value
+        self.window_name = f"Gaze Bridge ({self.camera_name})"
 
         self.bridge = CvBridge()
         self.intrinsics = None
@@ -74,15 +105,18 @@ class GazeBridgeNode(Node):
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
         self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
 
-        # 퍼블리셔
-        self.head_pub = self.create_publisher(PointStamped, '/head_position', 10)
-        self.marker_pub = self.create_publisher(MarkerArray, '/head_gaze_markers', 10)
-        self.gaze_origin_pub = self.create_publisher(PointStamped, '/gaze_origin', 10)
-        self.gaze_direction_pub = self.create_publisher(Vector3Stamped, '/gaze_direction', 10)
+        # 퍼블리셔 — camera_name으로 네임스페이스 분리 (두 인스턴스 동시 실행 대비).
+        # 정규 토픽(/head_position 등, 네임스페이스 없음)은 gaze_fusion_node.py가
+        # 이 토픽들을 구독해서 합친 뒤 자기 이름으로 발행한다.
+        ns = f"/{self.camera_name}"
+        self.head_pub = self.create_publisher(PointStamped, f'{ns}/head_position', 10)
+        self.marker_pub = self.create_publisher(MarkerArray, f'{ns}/head_gaze_markers', 10)
+        self.gaze_origin_pub = self.create_publisher(PointStamped, f'{ns}/gaze_origin', 10)
+        self.gaze_direction_pub = self.create_publisher(Vector3Stamped, f'{ns}/gaze_direction', 10)
 
         # 가상 카메라 퍼블리셔 (TF/CameraInfo만; image_raw는 vpt_virtual_camera 노드가 렌더링해서 퍼블리시)
         self.virtual_cam_info_pub = self.create_publisher(
-            CameraInfo, '/virtual_camera/camera_info', 10)
+            CameraInfo, f'{ns}/virtual_camera/camera_info', 10)
 
         # MediaPipe
         base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
@@ -94,20 +128,21 @@ class GazeBridgeNode(Node):
         )
         self.detector = vision.FaceLandmarker.create_from_options(options)
 
-        # 구독 (Camera B = 얼굴/gaze 전용, 2026-08-04부터 Kinect. docs/dual_camera_design.md 참고.
-        # Camera A(SLAM, D455)는 별도 네임스페이스 /camera/camera/... 로 계속 돌아감)
-        self.create_subscription(CameraInfo, '/kinect/rgb/camera_info',
+        # 구독 — 토픽/프레임은 전부 파라미터화 (2026-08-20, #21 VPT: 두 카메라 동시 운용)
+        self.create_subscription(CameraInfo, self.camera_info_topic,
                                   self.camera_info_callback, 10)
 
-        color_sub = message_filters.Subscriber(self, Image, '/kinect/rgb/image_raw')
-        depth_sub = message_filters.Subscriber(self, Image, '/kinect/depth/image_raw')
+        color_sub = message_filters.Subscriber(self, Image, self.rgb_topic)
+        depth_sub = message_filters.Subscriber(self, Image, self.depth_topic)
         self.sync = message_filters.ApproximateTimeSynchronizer(
             [color_sub, depth_sub], queue_size=10, slop=0.1)
         self.sync.registerCallback(self.image_callback)
 
-        self.get_logger().info("Gaze Bridge Node 시작!")
-        self.get_logger().info("가상 카메라 토픽: /virtual_camera/camera_info (image_raw는 vpt_virtual_camera 노드가 퍼블리시)")
-        self.get_logger().info("gaze 토픽: /gaze_origin, /gaze_direction (ray casting은 vpt_raycasting 노드가 담당)")
+        self.get_logger().info(f"Gaze Bridge Node 시작! (camera_name={self.camera_name}, "
+                                f"tf_frame={self.tf_frame})")
+        self.get_logger().info(f"구독: {self.rgb_topic}, {self.depth_topic}, {self.camera_info_topic}")
+        self.get_logger().info(f"발행: {ns}/head_position, {ns}/gaze_origin, {ns}/gaze_direction "
+                                "(fusion은 gaze_fusion_node.py가 담당, ray casting은 vpt_raycasting)")
 
     def camera_info_callback(self, msg):
         if self.intrinsics is None:
@@ -177,11 +212,13 @@ class GazeBridgeNode(Node):
         """머리 위치에 가상 카메라 TF 퍼블리시"""
         now = self.get_clock().now().to_msg()
 
-        # head_position TF (머리 위치)
+        # head_position TF (머리 위치) — camera_name으로 프레임 이름 분리 (두 인스턴스 동시
+        # 실행 시 같은 자식 프레임에 서로 다른 값을 발행하는 충돌 방지). 정규 'head_position'
+        # 프레임은 gaze_fusion_node.py가 두 인스턴스를 합친 뒤 발행한다.
         t = TransformStamped()
         t.header.stamp = now
         t.header.frame_id = MAP_FRAME
-        t.child_frame_id = 'head_position'
+        t.child_frame_id = f'{self.camera_name}_head_position'
         t.transform.translation.x = head_map.point.x
         t.transform.translation.y = head_map.point.y
         t.transform.translation.z = head_map.point.z
@@ -219,7 +256,7 @@ class GazeBridgeNode(Node):
         if self.real_camera_info is not None:
             cam_info = CameraInfo()
             cam_info.header.stamp = now
-            cam_info.header.frame_id = 'head_position'
+            cam_info.header.frame_id = f'{self.camera_name}_head_position'
             cam_info.width = self.real_camera_info.width
             cam_info.height = self.real_camera_info.height
             cam_info.k = self.real_camera_info.k
@@ -271,7 +308,7 @@ class GazeBridgeNode(Node):
 
             if 0.1 < d < 5.0:
                 head_cam = self.pixel_to_3d(u, v, d)
-                head_map = self.transform_to_map(head_cam, 'kinect_rgb_optical_frame')
+                head_map = self.transform_to_map(head_cam, self.tf_frame)
 
                 if head_map is not None:
                     self.head_pub.publish(head_map)
@@ -293,12 +330,12 @@ class GazeBridgeNode(Node):
                     # Gaze vector → map 좌표계 변환
                     try:
                         transform = self.tf_buffer.lookup_transform(
-                            MAP_FRAME, 'kinect_rgb_optical_frame',
+                            MAP_FRAME, self.tf_frame,
                             rclpy.time.Time(),
                             timeout=rclpy.duration.Duration(seconds=0.1)
                         )
                         v3 = Vector3Stamped()
-                        v3.header.frame_id = 'kinect_rgb_optical_frame'
+                        v3.header.frame_id = self.tf_frame
                         v3.vector.x = float(gaze_vec[0])
                         v3.vector.y = float(gaze_vec[1])
                         v3.vector.z = float(gaze_vec[2])
@@ -334,8 +371,9 @@ class GazeBridgeNode(Node):
             cv2.putText(frame, "얼굴 감지 안됨", (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
-        cv2.imshow("Gaze Bridge", frame)
-        cv2.waitKey(1)
+        if self.show_window:
+            cv2.imshow(self.window_name, frame)
+            cv2.waitKey(1)
 
         # 가상 카메라 이미지는 이 노드가 퍼블리시하지 않는다.
         # /cloud_map 기반 렌더링은 vpt_virtual_camera 노드가 담당 (head_position TF는 위에서 이미 퍼블리시함)
