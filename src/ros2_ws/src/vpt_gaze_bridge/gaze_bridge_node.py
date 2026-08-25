@@ -35,6 +35,11 @@ import sys
 import urllib.request
 from collections import deque
 import torch
+# kinect/d455 두 인스턴스가 동시에 떠서 각자 torch 기본 intra-op 스레드풀(코어 수만큼)을
+# 잡으면 스레드 오버섭스크립션으로 futex 교착이 걸린 적이 있다(2026-08-21, gaze_bridge_d455가
+# 카메라 토픽은 30Hz로 정상인데 콜백 자체가 멈춤 — CPU 116%, futex_do_wait에서 무한 대기).
+# 인스턴스당 1스레드로 고정해서 재발 방지.
+torch.set_num_threads(1)
 
 # GazeTR 경로 추가 (별도로 clone: https://github.com/yihuacheng/GazeTR)
 sys.path.insert(0, os.path.expanduser('~/GazeTR'))

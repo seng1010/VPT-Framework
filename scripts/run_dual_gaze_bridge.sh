@@ -24,15 +24,26 @@ if [[ -n "$CONDA_DEFAULT_ENV" ]]; then
     exit 1
 fi
 
+# anaconda의 python3(3.13)가 PATH 앞쪽에 있으면 시스템 rclpy(3.12용 컴파일된 C 확장)를 못 찾아
+# ModuleNotFoundError('rclpy._rclpy_pybind11')로 죽는다 — 이 머신에서 반복적으로 겪은 문제라
+# 여기서 아예 PATH에서 anaconda를 제거한다.
+export PATH="$(echo "$PATH" | tr ':' '\n' | grep -v anaconda | paste -sd:)"
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 GAZE_BRIDGE_DIR="$HERE/../src/ros2_ws/src/vpt_gaze_bridge"
 
 source /opt/ros/jazzy/setup.bash
 source "$HERE/../src/ros2_ws/install/setup.bash"
 
+# PID을 직접 추적해서 그 프로세스들만 종료한다. `kill 0`(프로세스 그룹 전체)은 이 스크립트
+# 자신의 쉘도 포함해서 TERM을 다시 받아 cleanup을 재귀 호출하는 무한루프에 빠졌던 적이
+# 있어서(2026-08-20) 쓰지 않는다.
+PIDS=()
 cleanup() {
+    trap - EXIT INT TERM  # 재진입 방지
     echo "종료 중..."
-    kill 0
+    kill "${PIDS[@]}" 2>/dev/null
+    wait "${PIDS[@]}" 2>/dev/null
 }
 trap cleanup EXIT INT TERM
 
@@ -44,6 +55,7 @@ python3 "$GAZE_BRIDGE_DIR/gaze_bridge_node.py" --ros-args \
     -p depth_topic:=/kinect/depth/image_raw \
     -p camera_info_topic:=/kinect/rgb/camera_info \
     -p tf_frame:=kinect_rgb_optical_frame &
+PIDS+=($!)
 
 echo "[2/3] gaze_bridge_node (d455) 시작..."
 python3 "$GAZE_BRIDGE_DIR/gaze_bridge_node.py" --ros-args \
@@ -53,8 +65,10 @@ python3 "$GAZE_BRIDGE_DIR/gaze_bridge_node.py" --ros-args \
     -p depth_topic:=/camera/camera/aligned_depth_to_color/image_raw \
     -p camera_info_topic:=/camera/camera/color/camera_info \
     -p tf_frame:=camera_color_optical_frame &
+PIDS+=($!)
 
 echo "[3/3] gaze_fusion_node 시작..."
 python3 "$GAZE_BRIDGE_DIR/gaze_fusion_node.py" &
+PIDS+=($!)
 
-wait
+wait "${PIDS[@]}"
