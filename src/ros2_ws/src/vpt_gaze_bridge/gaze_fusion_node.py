@@ -10,13 +10,21 @@ vpt_virtual_camera가 원래 기대하는 정규 토픽(`/head_position`, `/gaze
 `/gaze_direction`, `/virtual_camera/camera_info`, TF 프레임 `head_position`)으로 다시
 발행한다 — 즉 이 두 다운스트림 노드는 전혀 안 건드려도 된다.
 
-융합 방식(1차 버전, 단순 평균):
+융합 방식:
 - 각 카메라의 최신 head_position/gaze_direction에 타임스탬프를 붙여 캐시해 둔다.
 - STALE_SEC 이내에 갱신된 카메라만 "살아있다"고 보고 융합에 포함한다 (얼굴이 한쪽
   카메라에서만 보이는 경우가 흔함 — 이때는 그 한쪽 값을 그대로 통과시킨다).
-- 둘 다 살아있으면 head_position은 3D 평균, gaze_direction은 단위벡터 평균 후 재정규화.
-- 정교한 가중치(신뢰도 기반 등)는 다음 단계 — 지금은 "둘 다 있으면 평균, 하나만 있으면
-  그대로 통과, 둘 다 없으면 미발행"이 목표.
+- 둘 다 살아있으면 우선 두 카메라의 head_position 거리/gaze_direction 각도 차이를 본다
+  (2026-08-25 실측: 같은 사람을 동시에 보고 있는데도 head 48cm, gaze 52° 차이가 난 적
+  있음 — Kinect intrinsics가 실측 캘리브레이션이 아니라 근사값인 것과 두 카메라가 각자
+  독립적으로 localization하는 데서 오는 오차로 추정). HEAD_DISAGREE_M/GAZE_DISAGREE_DEG를
+  넘어서 어긋나면 평균이 오히려 둘 중 어느 카메라 값과도 안 맞는 의미 없는 결과가 되므로,
+  평균 대신 더 최근에 갱신된 카메라 하나만 신뢰해서 그대로 통과시킨다(신뢰도 점수가 따로
+  없어서 이게 현재 최선의 대체 신호 — WARN 로그로 얼마나 자주 발생하는지 남겨서 나중에
+  임계값/가중치 튜닝 근거로 쓴다).
+- 어긋나지 않으면 head_position은 3D 평균, gaze_direction은 단위벡터 평균 후 재정규화.
+- 신뢰도(얼굴 크기, landmark 품질 등) 기반 가중치는 아직 없음 — gaze_bridge_node.py가
+  그런 신호를 발행하게 되면 다음 단계로 추가.
 """
 
 import time
@@ -35,6 +43,13 @@ MAP_FRAME = 'map'
 STALE_SEC = 1.0          # 이보다 오래된 카메라 데이터는 융합에서 제외
 FUSE_RATE_HZ = 10.0       # 발행 주기 (구독 콜백이 아니라 타이머 기반 — 두 카메라 속도가 달라도 안정적)
 CAMERAS = ('kinect', 'd455')
+
+# 두 카메라가 동시에 살아있어도 이 이상 어긋나면 평균을 포기하고 한쪽만 쓴다
+# (2026-08-25 실측 근거는 모듈 docstring 참고). 값은 첫 실측 기반 1차 추정치 —
+# 오탐(정상인데 fallback됨)/누락(어긋났는데 평균됨) 비율 보고 나중에 조정.
+HEAD_DISAGREE_M = 0.3
+GAZE_DISAGREE_DEG = 30.0
+GAZE_DISAGREE_DOT = np.cos(np.radians(GAZE_DISAGREE_DEG))
 
 
 def quat_from_z_axis(z_axis):
@@ -129,6 +144,22 @@ class GazeFusionNode(Node):
         alive = self._alive_cameras()
         if not alive:
             return
+
+        if len(alive) >= 2:
+            cam_a, cam_b = alive[0], alive[1]
+            head_a, head_b = self.cache[cam_a]['head'], self.cache[cam_b]['head']
+            gaze_a, gaze_b = self.cache[cam_a]['gaze'], self.cache[cam_b]['gaze']
+            head_dist = float(np.linalg.norm(head_a - head_b))
+            gaze_dot = float(np.clip(np.dot(gaze_a, gaze_b), -1.0, 1.0))
+
+            if head_dist > HEAD_DISAGREE_M or gaze_dot < GAZE_DISAGREE_DOT:
+                fallback_cam = max(alive, key=lambda c: self.cache[c]['t_head'])
+                alive = [fallback_cam]
+                self.get_logger().warn(
+                    f"카메라 간 큰 불일치 감지(head={head_dist:.2f}m, "
+                    f"gaze={np.degrees(np.arccos(gaze_dot)):.0f}°) -> "
+                    f"평균 대신 {fallback_cam}만 사용",
+                    throttle_duration_sec=3.0)
 
         heads = np.stack([self.cache[c]['head'] for c in alive])
         gazes = np.stack([self.cache[c]['gaze'] for c in alive])
