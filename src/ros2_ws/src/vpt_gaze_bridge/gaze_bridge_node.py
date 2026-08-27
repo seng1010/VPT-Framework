@@ -45,6 +45,29 @@ torch.set_num_threads(1)
 sys.path.insert(0, os.path.expanduser('~/GazeTR'))
 from model import Model
 
+# PureGaze 경로 추가 (별도로 clone: https://github.com/yihuacheng/PureGaze, model/ 하위에 model.py+modules.py)
+# GazeTR의 `from model import Model`과 모듈 이름이 겹치므로 별도 함수 스코프에서 늦게 import한다
+# (모듈 캐시 오염 방지 — 자세한 이유는 _load_puregaze_model_class() 참고).
+PUREGAZE_MODEL_DIR = os.path.expanduser('~/PureGaze/model')
+import importlib.util as _il_util
+
+
+def _load_puregaze_model_class():
+    """PureGaze의 model.py도 파일명이 'model.py'라 위에서 이미 실행된
+    `from model import Model`(GazeTR)과 sys.modules 이름이 겹친다 — 그냥 import하면
+    캐시된 GazeTR의 model 모듈이 재사용되어 PureGaze 클래스를 가져오지 못한다.
+    importlib으로 별도 이름('puregaze_model')에 명시적으로 로드해서 충돌을 피한다.
+    model.py 내부의 `import modules`가 풀리려면 PUREGAZE_MODEL_DIR이 sys.path에
+    있어야 하므로 그것도 여기서 보장한다. (2026-08-27, 카메라 미연결 상태에서 통합 —
+    모델 로드+더미 forward pass는 검증했으나 실제 카메라 얼굴 이미지로는 미검증)"""
+    if PUREGAZE_MODEL_DIR not in sys.path:
+        sys.path.insert(0, PUREGAZE_MODEL_DIR)
+    spec = _il_util.spec_from_file_location(
+        'puregaze_model', os.path.join(PUREGAZE_MODEL_DIR, 'model.py'))
+    module = _il_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.Model
+
 from geometry_msgs.msg import TransformStamped, PointStamped, Vector3Stamped
 from visualization_msgs.msg import Marker, MarkerArray
 from std_msgs.msg import ColorRGBA
@@ -80,6 +103,9 @@ class GazeBridgeNode(Node):
         self.declare_parameter('camera_info_topic', '/kinect/rgb/camera_info')
         self.declare_parameter('tf_frame', 'kinect_rgb_optical_frame')
         self.declare_parameter('show_window', True)
+        # 'gazetr'(기존, 기본값) 또는 'puregaze'(2026-08-27 통합, 카메라로 미검증) —
+        # 기본값을 안 건드려서 명시적으로 opt-in 하지 않는 한 기존 동작 그대로 유지.
+        self.declare_parameter('gaze_model', 'gazetr')
 
         self.camera_name = self.get_parameter('camera_name').value
         self.rgb_topic = self.get_parameter('rgb_topic').value
@@ -87,6 +113,7 @@ class GazeBridgeNode(Node):
         self.camera_info_topic = self.get_parameter('camera_info_topic').value
         self.tf_frame = self.get_parameter('tf_frame').value
         self.show_window = self.get_parameter('show_window').value
+        self.gaze_model_name = self.get_parameter('gaze_model').value
         self.window_name = f"Gaze Bridge ({self.camera_name})"
 
         self.bridge = CvBridge()
@@ -101,6 +128,20 @@ class GazeBridgeNode(Node):
         self.gazetr.load_state_dict(state_dict)
         self.gazetr.eval()
         self.get_logger().info(f"GazeTR 모델 로드 완료! (checkpoint: {checkpoint_path})")
+
+        # PureGaze 모델 (gaze_model:=puregaze 로 명시했을 때만 로드 — 기본값 'gazetr'일 땐
+        # 아예 안 건드려서 기존 파이프라인과 100% 동일하게 유지)
+        self.puregaze = None
+        if self.gaze_model_name == 'puregaze':
+            self.get_logger().info("PureGaze 모델 로딩 중...")
+            PureGazeModel = _load_puregaze_model_class()
+            self.puregaze = PureGazeModel()
+            pg_checkpoint_path = os.path.expanduser('~/Downloads/PureGaze-Res50-ETH.pt')
+            pg_state_dict = torch.load(pg_checkpoint_path, map_location='cpu', weights_only=False)
+            self.puregaze.load_state_dict(pg_state_dict)  # strict=True 기본값 — 키 472개 완전 일치 확인됨(2026-08-27)
+            self.puregaze.eval()
+            self.get_logger().info(f"PureGaze 모델 로드 완료! (checkpoint: {pg_checkpoint_path})")
+        self.get_logger().info(f"사용할 gaze 모델: {self.gaze_model_name}")
 
         # 스무딩 버퍼
         self.gaze_buf = deque(maxlen=SMOOTH_N)
@@ -213,6 +254,38 @@ class GazeBridgeNode(Node):
             self.get_logger().warn(f"GazeTR 추론 실패: {e}")
             return None
 
+    def get_gaze_vector_puregaze(self, face_img):
+        """PureGaze로 gaze vector 추정 (pitch, yaw → 3D vector).
+
+        전처리/후처리는 get_gaze_vector_gazetr()과 동일하게 재사용한다 — 두 모델 다
+        GazeHub이 배포하는 동일한 ETH-XGaze 정규화 얼굴crop(224x224) 포맷으로 학습됐고,
+        PureGaze 공식 gazeto3d()도 "ETH는 [pitch yaw]"라고 명시(GazeTR과 같은 컨벤션).
+        입력 텐서 dict key('face')와 리턴 shape([N,2])도 GazeTR과 동일하게 확인함
+        (2026-08-27, 더미 입력으로 강제검증 — 실제 카메라 얼굴 이미지로는 미검증).
+        """
+        try:
+            face_resized = cv2.resize(face_img, (224, 224))
+            face_tensor = torch.from_numpy(face_resized).float()
+            face_tensor = face_tensor.permute(2, 0, 1)  # HWC → CHW
+            face_tensor = face_tensor / 255.0
+            face_tensor = face_tensor.unsqueeze(0)
+
+            with torch.no_grad():
+                gaze, _ = self.puregaze({'face': face_tensor}, require_img=False)
+
+            pitch = gaze[0][0].item()
+            yaw = gaze[0][1].item()
+
+            # pitch, yaw → 3D gaze vector (get_gaze_vector_gazetr()과 동일한 변환식)
+            gx = np.cos(pitch) * np.sin(yaw)
+            gy = -np.sin(pitch)
+            gz = np.cos(pitch) * np.cos(yaw)
+            gaze_vec = np.array([gx, gy, gz])
+            return gaze_vec / np.linalg.norm(gaze_vec)
+        except Exception as e:
+            self.get_logger().warn(f"PureGaze 추론 실패: {e}")
+            return None
+
     def publish_virtual_camera_tf(self, head_map, gaze_vec_map):
         """머리 위치에 가상 카메라 TF 퍼블리시"""
         now = self.get_clock().now().to_msg()
@@ -318,13 +391,19 @@ class GazeBridgeNode(Node):
                 if head_map is not None:
                     self.head_pub.publish(head_map)
 
-                    # Gaze vector - GazeTR 사용 (fallback: head pose)
+                    # Gaze vector - gaze_model 파라미터로 GazeTR/PureGaze 중 선택 (fallback: head pose)
                     face_crop = frame[max(0, v - 80):min(frame_h, v + 80), max(0, u - 60):min(frame_w, u + 60)]
-                    gazetr_vec = self.get_gaze_vector_gazetr(face_crop) if face_crop.size > 0 else None
+                    if face_crop.size > 0:
+                        if self.gaze_model_name == 'puregaze':
+                            model_vec = self.get_gaze_vector_puregaze(face_crop)
+                        else:
+                            model_vec = self.get_gaze_vector_gazetr(face_crop)
+                    else:
+                        model_vec = None
 
-                    if gazetr_vec is not None:
-                        raw_gaze = gazetr_vec
-                        self.get_logger().info(f"GazeTR gaze: {raw_gaze}")
+                    if model_vec is not None:
+                        raw_gaze = model_vec
+                        self.get_logger().info(f"{self.gaze_model_name} gaze: {raw_gaze}")
                     else:
                         raw_gaze = self.get_gaze_vector_from_matrix(transform_matrix.data)
 
