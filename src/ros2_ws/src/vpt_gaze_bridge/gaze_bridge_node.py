@@ -58,8 +58,9 @@ def _load_puregaze_model_class():
     캐시된 GazeTR의 model 모듈이 재사용되어 PureGaze 클래스를 가져오지 못한다.
     importlib으로 별도 이름('puregaze_model')에 명시적으로 로드해서 충돌을 피한다.
     model.py 내부의 `import modules`가 풀리려면 PUREGAZE_MODEL_DIR이 sys.path에
-    있어야 하므로 그것도 여기서 보장한다. (2026-08-27, 카메라 미연결 상태에서 통합 —
-    모델 로드+더미 forward pass는 검증했으나 실제 카메라 얼굴 이미지로는 미검증)"""
+    있어야 하므로 그것도 여기서 보장한다. (2026-08-27 최초 통합 시엔 카메라 미연결이라
+    더미 forward pass까지만 검증했으나, 같은 날 저녁 D455+Kinect 실카메라로
+    2분+ 안정 동작·정상 gaze 발행까지 확인 완료 — run_dual_gaze_bridge_puregaze.sh 참고)"""
     if PUREGAZE_MODEL_DIR not in sys.path:
         sys.path.insert(0, PUREGAZE_MODEL_DIR)
     spec = _il_util.spec_from_file_location(
@@ -103,7 +104,7 @@ class GazeBridgeNode(Node):
         self.declare_parameter('camera_info_topic', '/kinect/rgb/camera_info')
         self.declare_parameter('tf_frame', 'kinect_rgb_optical_frame')
         self.declare_parameter('show_window', True)
-        # 'gazetr'(기존, 기본값) 또는 'puregaze'(2026-08-27 통합, 카메라로 미검증) —
+        # 'gazetr'(기존, 기본값) 또는 'puregaze'(2026-08-27 통합, 같은 날 실카메라 검증 완료) —
         # 기본값을 안 건드려서 명시적으로 opt-in 하지 않는 한 기존 동작 그대로 유지.
         self.declare_parameter('gaze_model', 'gazetr')
 
@@ -260,8 +261,11 @@ class GazeBridgeNode(Node):
         전처리/후처리는 get_gaze_vector_gazetr()과 동일하게 재사용한다 — 두 모델 다
         GazeHub이 배포하는 동일한 ETH-XGaze 정규화 얼굴crop(224x224) 포맷으로 학습됐고,
         PureGaze 공식 gazeto3d()도 "ETH는 [pitch yaw]"라고 명시(GazeTR과 같은 컨벤션).
-        입력 텐서 dict key('face')와 리턴 shape([N,2])도 GazeTR과 동일하게 확인함
-        (2026-08-27, 더미 입력으로 강제검증 — 실제 카메라 얼굴 이미지로는 미검증).
+        입력 텐서 dict key('face')와 리턴 shape([N,2])도 GazeTR과 동일하게 확인함.
+        2026-08-27 D455+Kinect 실카메라로 2분+ 검증 — 항상 정상 정규화 벡터 출력,
+        예외/NaN 없음. 다만 절대 각도 정확도는 아이트래킹 ground-truth 없이는 판단
+        불가 — 방향이 프레임마다 흔들리는 정도가 정상 범위인지는 IRB 참가자 실험으로
+        확인해야 함.
         """
         try:
             face_resized = cv2.resize(face_img, (224, 224))

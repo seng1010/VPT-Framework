@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # run_dual_gaze_bridge.sh의 PureGaze 버전 (2026-08-27, gaze_model:=puregaze만 추가).
-# 카메라 없이 통합해서 모델 로드/더미 forward pass만 검증한 상태 — 실제 얼굴로는 미검증.
+# 2026-08-27 저녁 D455+Kinect 실카메라로 검증 완료 — 2분+ 안정 동작, gaze_bridge_d455/
+# gaze_bridge_kinect 둘 다 실시간 puregaze gaze 발행, gaze_fusion_node가 정상적으로
+# /head_position·/gaze_direction(map frame)까지 재발행하는 것 확인. 스레드 교착 재발 없음.
 # 문제 생기면 그냥 run_dual_gaze_bridge.sh(GazeTR, 검증된 버전)로 돌아가면 됨.
 #
 # 2026-08-20, #21 VPT 미팅 반영: D455/Kinect가 SLAM전용/얼굴전용으로 나뉘는 게 아니라
