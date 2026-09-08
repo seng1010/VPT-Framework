@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""GazeTR 각도 오차 정량 평가 — Pupil Core를 ground-truth 신뢰도 검증용으로 쓰는
-"고정 타겟" 프로토콜(한국인공지능학술대회 2p 논문용, 2026-08-31 설계).
+"""시선 추정 모델(GazeTR/PureGaze) 각도 오차 정량 평가 — Pupil Core를 ground-truth
+신뢰도 검증용으로 쓰는 "고정 타겟" 프로토콜(한국인공지능학술대회 2p 논문용, 2026-08-31 설계).
 
 방법론: 벽에 카메라(D455/Kinect) 기준 3D 위치를 실측한 타겟을 여러 개 붙여두고,
 피험자가 순서대로 응시한다. 각 트라이얼(타겟 하나를 보는 구간)에서:
-  1. GazeTR 원본 벡터(gaze_bridge_node.py가 새로 발행하는 {camera}/gazetr_raw,
+  1. gaze 모델 원본 벡터(gaze_bridge_node.py가 발행하는 {camera}/gaze_raw —
+     gaze_model 파라미터에 따라 GazeTR 또는 PureGaze 출력,
      카메라 로컬 프레임, EMA 스무딩/world 변환 전)의 평균을 구한다.
   2. "진짜" 시선 방향 = normalize(타겟 위치 - 머리 위치). 머리 위치는 같은 파이프라인의
      {camera}/head_position_cam(깊이 기반 추정, 카메라 로컬 프레임 — /head_position은 SLAM
@@ -21,15 +22,15 @@ Pupil Core는 이 각도 계산에 직접 들어가지 않는다 — 대신 각 
 1. 타겟보드 설치 후 각 타겟의 3D 위치(카메라 기준, 미터)를 줄자로 실측 —
    trial_config.yaml에 기입 (예시는 이 파일 맨 아래 `--write-example-config` 참고).
 2. 실험 중 아래 두 토픽을 CSV로 녹화(피험자가 트라이얼 순서대로 타겟을 보는 동안):
-     ros2 topic echo /kinect/gazetr_raw --csv > gazetr_raw.csv    (또는 /d455/...)
+     ros2 topic echo /kinect/gaze_raw --csv > gaze_raw.csv    (또는 /d455/...)
      ros2 topic echo /kinect/head_position_cam --csv > head_position.csv
    두 CSV 다 timestamp 컬럼이 있어야 함(기본 --csv 출력에 포함됨).
 3. Pupil Player로 Pupil Core 녹화본을 열어 gaze_positions.csv로 export.
 4. 트라이얼별 시작/끝 시각(유닉스 타임스탬프, 실험 중 "타겟 1 시작 시각" 식으로 메모해두거나
    Pupil Core annotation 기능으로 남겨도 됨)을 trial_config.yaml에 기입.
 5. 실행:
-     python scripts/eval_gazetr_accuracy.py trial_config.yaml \
-         --gazetr-csv gazetr_raw.csv --head-csv head_position.csv \
+     python scripts/eval_gaze_accuracy.py trial_config.yaml \
+         --gaze-csv gaze_raw.csv --head-csv head_position.csv \
          --pupil-csv gaze_positions.csv
 """
 import argparse
@@ -95,14 +96,14 @@ def window_mean(ts, values, t_start, t_end):
     return values[mask].mean(axis=0), n
 
 
-def evaluate(config_path, gazetr_csv, head_csv, pupil_csv=None,
+def evaluate(config_path, gaze_csv, head_csv, pupil_csv=None,
              min_confidence=0.6, out_csv=None):
     with open(config_path) as f:
         config = yaml.safe_load(f)
     camera_origin = np.array(config.get('camera_origin_m', [0.0, 0.0, 0.0]), dtype=np.float64)
     trials = config['trials']
 
-    gazetr_ts, gazetr_xyz = load_vector_csv(gazetr_csv)
+    gaze_ts, gaze_xyz = load_vector_csv(gaze_csv)
     head_ts, head_xyz = load_vector_csv(head_csv)
     pupil_ts = pupil_conf = None
     if pupil_csv:
@@ -114,10 +115,10 @@ def evaluate(config_path, gazetr_csv, head_csv, pupil_csv=None,
         t0, t1 = float(trial['t_start']), float(trial['t_end'])
         target_pos = np.array(trial['target_pos_m'], dtype=np.float64) - camera_origin
 
-        gaze_mean, n_gaze = window_mean(gazetr_ts, gazetr_xyz, t0, t1)
+        gaze_mean, n_gaze = window_mean(gaze_ts, gaze_xyz, t0, t1)
         head_mean, n_head = window_mean(head_ts, head_xyz, t0, t1)
 
-        row = {'trial': name, 'n_gazetr_samples': n_gaze, 'n_head_samples': n_head}
+        row = {'trial': name, 'n_gaze_samples': n_gaze, 'n_head_samples': n_head}
 
         if pupil_ts is not None:
             mask = (pupil_ts >= t0) & (pupil_ts <= t1)
@@ -133,7 +134,7 @@ def evaluate(config_path, gazetr_csv, head_csv, pupil_csv=None,
 
         if gaze_mean is None or head_mean is None:
             row['angular_error_deg'] = None
-            print(f"[경고] {name}: 이 구간에 gazetr={n_gaze}개, head={n_head}개 샘플 — 오차 계산 불가")
+            print(f"[경고] {name}: 이 구간에 gaze={n_gaze}개, head={n_head}개 샘플 — 오차 계산 불가")
         else:
             true_dir = target_pos - head_mean
             row['angular_error_deg'] = round(angular_error_deg(gaze_mean, true_dir), 2)
@@ -144,7 +145,7 @@ def evaluate(config_path, gazetr_csv, head_csv, pupil_csv=None,
     print(f"\n{'trial':<12} {'err(deg)':>9} {'n_gaze':>7} {'n_head':>7} {'compliant':>10}")
     for r in results:
         err = f"{r['angular_error_deg']:.2f}" if r['angular_error_deg'] is not None else "N/A"
-        print(f"{r['trial']:<12} {err:>9} {r['n_gazetr_samples']:>7} "
+        print(f"{r['trial']:<12} {err:>9} {r['n_gaze_samples']:>7} "
               f"{r['n_head_samples']:>7} {str(r['compliant']):>10}")
 
     if valid_errors:
@@ -190,7 +191,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("config", nargs="?", help="trial_config.yaml")
-    ap.add_argument("--gazetr-csv")
+    ap.add_argument("--gaze-csv")
     ap.add_argument("--head-csv")
     ap.add_argument("--pupil-csv", default=None)
     ap.add_argument("--min-confidence", type=float, default=0.6)
@@ -215,11 +216,11 @@ def main():
         print("[self-test] OK — angular_error_deg 정상")
         return
 
-    if not (args.config and args.gazetr_csv and args.head_csv):
-        ap.error("config, --gazetr-csv, --head-csv는 필수(또는 --self-test / "
+    if not (args.config and args.gaze_csv and args.head_csv):
+        ap.error("config, --gaze-csv, --head-csv는 필수(또는 --self-test / "
                   "--write-example-config만 단독 사용)")
 
-    evaluate(args.config, args.gazetr_csv, args.head_csv,
+    evaluate(args.config, args.gaze_csv, args.head_csv,
               pupil_csv=args.pupil_csv, min_confidence=args.min_confidence,
               out_csv=args.out_csv)
 
