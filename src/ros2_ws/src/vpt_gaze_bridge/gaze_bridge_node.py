@@ -118,6 +118,13 @@ class GazeBridgeNode(Node):
         self.marker_pub = self.create_publisher(MarkerArray, f'{ns}/head_gaze_markers', 10)
         self.gaze_origin_pub = self.create_publisher(PointStamped, f'{ns}/gaze_origin', 10)
         self.gaze_direction_pub = self.create_publisher(Vector3Stamped, f'{ns}/gaze_direction', 10)
+        # GazeTR 원본 출력(카메라 로컬 프레임, EMA 스무딩/world 변환 전) — 정량 평가용.
+        # /gaze_direction은 스무딩+SLAM 변환을 거쳐서 GazeTR 자체 정확도만 분리해서 못 봄.
+        self.gazetr_raw_pub = self.create_publisher(Vector3Stamped, f'{ns}/gazetr_raw', 10)
+        # head_position은 map 프레임(SLAM 변환 후)이라 카메라 기준 실측 타겟 위치랑 바로 못
+        # 비교함 — gazetr_raw와 같은 카메라 로컬 프레임의 머리 위치도 별도로 발행(정량 평가용).
+        self.head_position_cam_pub = self.create_publisher(
+            PointStamped, f'{ns}/head_position_cam', 10)
 
         # 가상 카메라 퍼블리셔 (TF/CameraInfo만; image_raw는 vpt_virtual_camera 노드가 렌더링해서 퍼블리시)
         self.virtual_cam_info_pub = self.create_publisher(
@@ -315,6 +322,13 @@ class GazeBridgeNode(Node):
                 head_cam = self.pixel_to_3d(u, v, d)
                 head_map = self.transform_to_map(head_cam, self.tf_frame)
 
+                head_cam_msg = PointStamped()
+                head_cam_msg.header.frame_id = self.tf_frame
+                head_cam_msg.header.stamp = self.get_clock().now().to_msg()
+                head_cam_msg.point.x, head_cam_msg.point.y, head_cam_msg.point.z = (
+                    float(head_cam[0]), float(head_cam[1]), float(head_cam[2]))
+                self.head_position_cam_pub.publish(head_cam_msg)
+
                 if head_map is not None:
                     self.head_pub.publish(head_map)
 
@@ -325,6 +339,13 @@ class GazeBridgeNode(Node):
                     if gazetr_vec is not None:
                         raw_gaze = gazetr_vec
                         self.get_logger().info(f"GazeTR gaze: {raw_gaze}")
+
+                        raw_msg = Vector3Stamped()
+                        raw_msg.header.frame_id = self.tf_frame
+                        raw_msg.header.stamp = self.get_clock().now().to_msg()
+                        raw_msg.vector.x, raw_msg.vector.y, raw_msg.vector.z = (
+                            float(gazetr_vec[0]), float(gazetr_vec[1]), float(gazetr_vec[2]))
+                        self.gazetr_raw_pub.publish(raw_msg)
                     else:
                         raw_gaze = self.get_gaze_vector_from_matrix(transform_matrix.data)
 
