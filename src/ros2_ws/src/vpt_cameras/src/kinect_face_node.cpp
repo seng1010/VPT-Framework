@@ -10,6 +10,10 @@
 // 카메라 인트린식(fx/fy/cx/cy)은 Kinect v1 RGB 카메라의 널리 알려진 근사값이다 — 이 특정
 // 유닛을 실측 캘리브레이션한 게 아니다. 정확도가 중요해지면(예: 시선 픽셀 depth 융합)
 // 체커보드로 실측 필요.
+//
+// device_index/frame_id를 파라미터로 뺌 — Kinect 2대를 각각 다른 노드 인스턴스로 동시에
+// 띄우기 위함(2026-09-14, ICRA 마감 직전 긴급 추가). 기존엔 DEVICE_INDEX=0 하드코딩이라
+// 두 인스턴스가 항상 같은 물리 장치를 잡으려고 해서 둘 중 하나가 열기 실패했음.
 
 #include <chrono>
 #include <cstring>
@@ -31,7 +35,6 @@ namespace
 {
 constexpr int WIDTH = 640;
 constexpr int HEIGHT = 480;
-constexpr int DEVICE_INDEX = 0;
 
 // Kinect v1 RGB 카메라 근사 인트린식 (실측 아님 — 파일 상단 주석 참고)
 constexpr double APPROX_FX = 525.0;
@@ -46,6 +49,9 @@ public:
   KinectFaceNode()
   : Node("kinect_face_node")
   {
+    device_index_ = declare_parameter<int>("device_index", 0);
+    frame_id_ = declare_parameter<std::string>("frame_id", "kinect_rgb_optical_frame");
+
     rgb_pub_ = create_publisher<sensor_msgs::msg::Image>("kinect/rgb/image_raw", 10);
     depth_pub_ = create_publisher<sensor_msgs::msg::Image>("kinect/depth/image_raw", 10);
     info_pub_ = create_publisher<sensor_msgs::msg::CameraInfo>("kinect/rgb/camera_info", 10);
@@ -53,21 +59,22 @@ public:
     camera_info_ = buildCameraInfo();
 
     // 켜져 있다는 걸 눈으로 바로 확인할 수 있게 (freenect-camtest도 이렇게 함)
-    freenect_sync_set_led(LED_GREEN, DEVICE_INDEX);
+    freenect_sync_set_led(LED_GREEN, device_index_);
 
     timer_ = create_wall_timer(33ms, std::bind(&KinectFaceNode::onTimer, this));
 
-    RCLCPP_INFO(get_logger(), "kinect_face_node 시작 — kinect/rgb, kinect/depth 발행");
+    RCLCPP_INFO(get_logger(), "kinect_face_node 시작 (device_index=%d) — kinect/rgb, kinect/depth 발행",
+      device_index_);
   }
 
   ~KinectFaceNode() override
   {
-    freenect_sync_set_led(LED_OFF, DEVICE_INDEX);
+    freenect_sync_set_led(LED_OFF, device_index_);
     freenect_sync_stop();
   }
 
 private:
-  static sensor_msgs::msg::CameraInfo buildCameraInfo()
+  sensor_msgs::msg::CameraInfo buildCameraInfo()
   {
     sensor_msgs::msg::CameraInfo info;
     info.width = WIDTH;
@@ -90,10 +97,10 @@ private:
 
     void * video_buf = nullptr;
     uint32_t video_ts = 0;
-    if (freenect_sync_get_video(&video_buf, &video_ts, DEVICE_INDEX, FREENECT_VIDEO_RGB) == 0) {
+    if (freenect_sync_get_video(&video_buf, &video_ts, device_index_, FREENECT_VIDEO_RGB) == 0) {
       auto msg = std::make_unique<sensor_msgs::msg::Image>();
       msg->header.stamp = stamp;
-      msg->header.frame_id = "kinect_rgb_optical_frame";
+      msg->header.frame_id = frame_id_;
       msg->height = HEIGHT;
       msg->width = WIDTH;
       msg->encoding = "rgb8";
@@ -108,7 +115,7 @@ private:
 
     void * depth_buf = nullptr;
     uint32_t depth_ts = 0;
-    if (freenect_sync_get_depth(&depth_buf, &depth_ts, DEVICE_INDEX,
+    if (freenect_sync_get_depth(&depth_buf, &depth_ts, device_index_,
         FREENECT_DEPTH_REGISTERED) == 0)
     {
       // FREENECT_DEPTH_REGISTERED: uint16_t/px, mm 단위, RGB 프레임에 이미 정렬됨
@@ -116,7 +123,7 @@ private:
       // 동일한 의미)
       auto msg = std::make_unique<sensor_msgs::msg::Image>();
       msg->header.stamp = stamp;
-      msg->header.frame_id = "kinect_rgb_optical_frame";
+      msg->header.frame_id = frame_id_;
       msg->height = HEIGHT;
       msg->width = WIDTH;
       msg->encoding = "16UC1";
@@ -131,10 +138,12 @@ private:
 
     auto info = camera_info_;
     info.header.stamp = stamp;
-    info.header.frame_id = "kinect_rgb_optical_frame";
+    info.header.frame_id = frame_id_;
     info_pub_->publish(info);
   }
 
+  int device_index_;
+  std::string frame_id_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr rgb_pub_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr depth_pub_;
   rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr info_pub_;

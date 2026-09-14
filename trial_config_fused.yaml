@@ -1,0 +1,17 @@
+# 퓨전(kinect1+kinect2) 평가용 — 타겟 위치는 kinect1 기준(=map 원점, identity TF)이라
+# trial_config.yaml과 동일하게 재사용. 시간만 새 트라이얼 값으로 채움.
+camera_origin_m: [0.0, 0.0, 0.0]
+
+trials:
+  - name: target_1
+    target_pos_m: [0.62, -0.19, 0.67]
+    t_start: 1789400002.0
+    t_end: 1789400007.0
+  - name: target_2
+    target_pos_m: [0.22, -0.03, 0.25]
+    t_start: 1789400027.0
+    t_end: 1789400032.0
+  - name: target_3
+    target_pos_m: [-0.50, -0.33, 0.65]
+    t_start: 1789400050.0
+    t_end: 1789400054.0

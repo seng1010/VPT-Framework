@@ -42,7 +42,7 @@ import tf2_ros
 MAP_FRAME = 'map'
 STALE_SEC = 1.0          # 이보다 오래된 카메라 데이터는 융합에서 제외
 FUSE_RATE_HZ = 10.0       # 발행 주기 (구독 콜백이 아니라 타이머 기반 — 두 카메라 속도가 달라도 안정적)
-CAMERAS = ('kinect', 'd455')
+CAMERAS = ('kinect1', 'kinect2')  # 2026-09-14 ICRA 마감 긴급 파일럿 — Kinect 2대 구성용 임시 변경
 
 # 두 카메라가 동시에 살아있어도 이 이상 어긋나면 평균을 포기하고 한쪽만 쓴다
 # (2026-08-25 실측 근거는 모듈 docstring 참고). 값은 첫 실측 기반 1차 추정치 —

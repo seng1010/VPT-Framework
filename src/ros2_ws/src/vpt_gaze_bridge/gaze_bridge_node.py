@@ -252,10 +252,11 @@ class GazeBridgeNode(Node):
             pitch = gaze[0][0].item()
             yaw = gaze[0][1].item()
 
-            # pitch, yaw → 3D gaze vector
-            gx = np.cos(pitch) * np.sin(yaw)
+            # pitch, yaw → 3D gaze vector (표준 gazeto3d 부호: x,z에도 마이너스 필요 —
+            # 2026-09-14 실측 트라이얼에서 x,z 부호 누락 버그 발견, 여기서 수정)
+            gx = -np.cos(pitch) * np.sin(yaw)
             gy = -np.sin(pitch)
-            gz = np.cos(pitch) * np.cos(yaw)
+            gz = -np.cos(pitch) * np.cos(yaw)
             gaze_vec = np.array([gx, gy, gz])
             return gaze_vec / np.linalg.norm(gaze_vec)
         except Exception as e:
@@ -287,10 +288,11 @@ class GazeBridgeNode(Node):
             pitch = gaze[0][0].item()
             yaw = gaze[0][1].item()
 
-            # pitch, yaw → 3D gaze vector (get_gaze_vector_gazetr()과 동일한 변환식)
-            gx = np.cos(pitch) * np.sin(yaw)
+            # pitch, yaw → 3D gaze vector (get_gaze_vector_gazetr()과 동일한 변환식,
+            # 2026-09-14 x,z 부호 누락 버그 수정)
+            gx = -np.cos(pitch) * np.sin(yaw)
             gy = -np.sin(pitch)
-            gz = np.cos(pitch) * np.cos(yaw)
+            gz = -np.cos(pitch) * np.cos(yaw)
             gaze_vec = np.array([gx, gy, gz])
             return gaze_vec / np.linalg.norm(gaze_vec)
         except Exception as e:

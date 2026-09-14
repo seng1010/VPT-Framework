@@ -1,0 +1,17 @@
+# 카메라(D455 또는 Kinect) 렌즈 위치를 원점(0,0,0)으로 잡아도 되고, 다른 고정 기준점을
+# 잡고 camera_origin_m으로 상대위치를 빼줘도 됨. 전부 미터 단위.
+camera_origin_m: [0.0, 0.0, 0.0]
+
+trials:
+  - name: target_1
+    target_pos_m: [0.62, -0.19, 0.67]   # 카메라 기준 [x, y, z], 실측
+    t_start: 1789385808.0
+    t_end: 1789385811.0
+  - name: target_2
+    target_pos_m: [0.22, -0.03, 0.25]
+    t_start: 1789385915.0
+    t_end: 1789385920.0
+  - name: target_3
+    target_pos_m: [-0.50, -0.33, 0.65]
+    t_start: 1789386014.0
+    t_end: 1789386019.0
