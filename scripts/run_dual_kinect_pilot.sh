@@ -46,10 +46,11 @@ ros2 run tf2_ros static_transform_publisher \
     --x 0 --y 0 --z 0 &
 PIDS+=($!)
 
-echo "[2/4] static TF (map -> kinect2_rgb_optical_frame) 시작..."
+echo "[2/4] static TF (map -> kinect2_rgb_optical_frame) 시작 (실측 캘리브레이션, 2026-09-15 Kabsch 정합, held-out RMS 1.06cm, raw data: kinect_extrinsic_calib_pairs.csv)..."
 ros2 run tf2_ros static_transform_publisher \
     --frame-id map --child-frame-id kinect2_rgb_optical_frame \
-    --x 0.6 --y 0 --z 0 &
+    --x 0.4836 --y 0.1448 --z 0.1308 \
+    --qx -0.0457 --qy -0.1693 --qz 0.1083 --qw 0.9785 &
 PIDS+=($!)
 
 sleep 1
