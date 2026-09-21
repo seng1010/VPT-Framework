@@ -71,7 +71,7 @@ def _load_puregaze_model_class():
 
 from geometry_msgs.msg import TransformStamped, PointStamped, Vector3Stamped
 from visualization_msgs.msg import Marker, MarkerArray
-from std_msgs.msg import ColorRGBA
+from std_msgs.msg import ColorRGBA, Float32
 from sensor_msgs.msg import Image, CameraInfo
 from cv_bridge import CvBridge
 import tf2_ros
@@ -88,7 +88,9 @@ if not os.path.exists(MODEL_PATH):
     print("다운로드 완료!")
 
 SMOOTH_N = 10
-MAP_FRAME = 'map'  # rtabmap map frame (try '/map' if markers don't appear)
+MAP_FRAME = 'map'
+# 얼굴 전방축의 부호 컨벤션을 초기 N프레임으로 자동 판별한다 (compute_frontality_deg 참고).
+FRONTALITY_SIGN_CHECK_N = 30  # rtabmap map frame (try '/map' if markers don't appear)
 
 
 class GazeBridgeNode(Node):
@@ -147,6 +149,11 @@ class GazeBridgeNode(Node):
         # 스무딩 버퍼
         self.gaze_buf = deque(maxlen=SMOOTH_N)
 
+        # frontality(얼굴 정면도) 부호 자동 판별용 — compute_frontality_deg 참고
+        self._frontality_cos_buf = deque(maxlen=FRONTALITY_SIGN_CHECK_N)
+        self._frontality_sign = 1.0
+        self._frontality_sign_checked = False
+
         # TF
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
@@ -167,6 +174,10 @@ class GazeBridgeNode(Node):
         # 비교함 — gaze_raw와 같은 카메라 로컬 프레임의 머리 위치도 별도로 발행(정량 평가용).
         self.head_position_cam_pub = self.create_publisher(
             PointStamped, f'{ns}/head_position_cam', 10)
+        # 이 카메라가 얼굴을 얼마나 '정면으로' 보고 있는지(도). 0°=카메라를 똑바로 마주봄,
+        # 90°에 가까울수록 준측면. gaze_fusion_node.py가 이걸 융합 가중치로 환산하고,
+        # 평가 스크립트는 오차-편위각 관계를 그리는 데 쓴다 (results_summary.md 참고).
+        self.frontality_pub = self.create_publisher(Float32, f'{ns}/face_frontality_deg', 10)
 
         # 가상 카메라 퍼블리셔 (TF/CameraInfo만; image_raw는 vpt_virtual_camera 노드가 렌더링해서 퍼블리시)
         self.virtual_cam_info_pub = self.create_publisher(
@@ -230,6 +241,54 @@ class GazeBridgeNode(Node):
         except Exception as e:
             self.get_logger().warn(f"TF 변환 실패: {e}")
             return None
+
+    def compute_frontality_deg(self, transform_matrix, head_cam):
+        """카메라에서 본 얼굴의 '정면도'(도) — 얼굴 전방축과 (머리→카메라) 방향 사이 각도.
+
+        0°면 카메라를 똑바로 마주본 상태, 90°에 가까울수록 준측면이라 눈이 가려져
+        appearance 기반 시선추정이 무너진다. 2026-09-15 파일럿에서 오차가 정확히 이 각도를
+        따라갔다 — 편위 22~39°에서 7~28°, 87~89°에서 38~62° (results_summary.md).
+        그래서 이 값이 "이 카메라의 추정을 얼마나 믿을지"의 물리적 근거가 된다.
+
+        광축(-z) 대신 (머리→카메라) 방향을 기준으로 삼는 이유: 머리가 광축에서 벗어나
+        앉아 있으면(파일럿에선 ~0.1m 벗어나 약 11° 차이) 광축 기준 각도가 실제 "카메라를
+        마주보는 정도"와 어긋난다. 머리 위치를 쓰면 그 오차가 사라진다.
+
+        부호 컨벤션: MediaPipe facial_transformation_matrix의 전방축 부호는
+        get_gaze_vector_from_matrix()가 쓰는 -z 가정을 그대로 따른다. 다만 이 가정이
+        이 파이프라인에서 실측 검증된 적이 없어서(fallback 경로라 거의 안 쓰임), 초기
+        FRONTALITY_SIGN_CHECK_N 프레임으로 자동 판별한다 — MediaPipe는 뒤통수를 얼굴로
+        검출하지 못하므로 실제 각도는 항상 90° 미만이어야 하고, 그 구간 cos의 중앙값이
+        음수로 나오면 전방축 부호가 반대라는 뜻이다.
+        """
+        if head_cam is None:
+            return None
+        R = np.array(transform_matrix).reshape(4, 4)[:3, :3]
+        face_fwd = R @ np.array([0.0, 0.0, -1.0])
+        fnorm = np.linalg.norm(face_fwd)
+        d = np.linalg.norm(head_cam)
+        if fnorm < 1e-6 or d < 1e-6:
+            return None
+        face_fwd = face_fwd / fnorm
+        to_cam = -np.asarray(head_cam, dtype=float) / d  # 머리에서 카메라 원점을 향하는 단위벡터
+
+        cos_raw = float(np.dot(face_fwd, to_cam))
+        if not self._frontality_sign_checked:
+            self._frontality_cos_buf.append(cos_raw)
+            if len(self._frontality_cos_buf) == FRONTALITY_SIGN_CHECK_N:
+                median = float(np.median(self._frontality_cos_buf))
+                if median < 0.0:
+                    self._frontality_sign = -1.0
+                    self.get_logger().warn(
+                        f"얼굴 전방축 부호가 반대로 판별됨(초기 {FRONTALITY_SIGN_CHECK_N}프레임 "
+                        f"cos 중앙값={median:.2f}) — frontality 계산에 -1을 곱해 보정합니다.")
+                else:
+                    self.get_logger().info(
+                        f"얼굴 전방축 부호 확인 완료(cos 중앙값={median:.2f}, 보정 불필요).")
+                self._frontality_sign_checked = True
+
+        cos = float(np.clip(self._frontality_sign * cos_raw, -1.0, 1.0))
+        return float(np.degrees(np.arccos(cos)))
 
     def get_gaze_vector_from_matrix(self, transform_matrix):
         """head pose 기반 gaze vector (fallback용)"""
@@ -407,6 +466,10 @@ class GazeBridgeNode(Node):
                 head_cam_msg.point.x, head_cam_msg.point.y, head_cam_msg.point.z = (
                     float(head_cam[0]), float(head_cam[1]), float(head_cam[2]))
                 self.head_position_cam_pub.publish(head_cam_msg)
+
+                frontality = self.compute_frontality_deg(transform_matrix.data, head_cam)
+                if frontality is not None:
+                    self.frontality_pub.publish(Float32(data=float(frontality)))
 
                 if head_map is not None:
                     self.head_pub.publish(head_map)
