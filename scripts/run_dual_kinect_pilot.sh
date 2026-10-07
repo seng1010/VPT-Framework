@@ -46,11 +46,14 @@ ros2 run tf2_ros static_transform_publisher \
     --x 0 --y 0 --z 0 &
 PIDS+=($!)
 
-echo "[2/4] static TF (map -> kinect2_rgb_optical_frame) 시작 (실측 캘리브레이션, 2026-09-15 Kabsch 정합, held-out RMS 1.06cm, raw data: kinect_extrinsic_calib_pairs.csv)..."
+echo "[2/4] static TF (map -> kinect2_rgb_optical_frame) 시작 (실측 캘리브레이션, 2026-10-07 Kabsch 정합, 265쌍, held-out RMS 0.41cm, raw data: kinect_extrinsic_calib_pairs_20261007.csv)..."
+# 2026-10-07 재측정 — 9/15 값(x=0.4836 y=0.1448 z=0.1308, q=-0.0457/-0.1693/0.1083/0.9785,
+# 106쌍 held-out 1.06cm)은 그 뒤 카메라를 여러 번 옮겨서 더 이상 유효하지 않음. 특히 z가
+# 0.131 -> 0.260으로 크게 달라졌다. 대응쌍 2.5배, held-out 오차 2.6배 개선.
 ros2 run tf2_ros static_transform_publisher \
     --frame-id map --child-frame-id kinect2_rgb_optical_frame \
-    --x 0.4836 --y 0.1448 --z 0.1308 \
-    --qx -0.0457 --qy -0.1693 --qz 0.1083 --qw 0.9785 &
+    --x 0.4903 --y 0.1462 --z 0.2597 \
+    --qx 0.0045 --qy -0.3046 --qz 0.1944 --qw 0.9324 &
 PIDS+=($!)
 
 sleep 1
